@@ -16,6 +16,15 @@ Design contract
   and the operator UI can flag the degraded path.
 * When zone-level breakdown is missing, the cooling load is distributed
   proportional to each zone's ``design_load_kw`` from sys_config.
+
+Note
+----
+``is_low_sensor`` is currently an **observability-only** flag. The
+:class:`core.safety.supervisor.SafetySupervisor` and
+:class:`core.control.control_chain.ControlChain` do not branch on it
+today; downstream operator dashboards and HistoryLogger rows consume it
+to surface the degraded path. Future work may use it to relax / tighten
+threshold rules (concern #8 from the v1 review).
 """
 
 from __future__ import annotations

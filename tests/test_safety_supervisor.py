@@ -172,6 +172,57 @@ def test_rule8_indoor_temp_breach_forces_mid_under_moderate_load() -> None:
     assert out.overridden is True
 
 
+def test_rule6_comm_timeout_clears_n_chillers_and_vrf_demand() -> None:
+    """Rule 6 must zero both n_chillers AND vrf_demand_kw on comm_timeout."""
+    sup = SafetySupervisor(_sys_config())
+    state = _benign_state() | {"comm_timeout": True}
+    cmd = ControlCommand(
+        mode="HIGH", n_chillers=3, vrf_demand_kw=2500.0,
+    )
+    out = sup.validate_command(cmd, state)
+    assert out.mode == "LOW"
+    assert out.n_chillers == 0
+    assert out.vrf_demand_kw == 0.0
+    assert out.overridden is True
+
+
+def test_rule7_ai_failure_low_clears_n_chillers_and_vrf_demand() -> None:
+    """Rule 7 with fallback_mode=LOW must mirror rule 6's clearing.
+
+    Concern #10 from the v1 review: previously rule 7 only set the mode,
+    leaving ``n_chillers`` and ``vrf_demand_kw`` from the upstream
+    proposal -- the resulting ControlCommand would tell a real BACnet
+    adapter "mode=LOW with non-zero chillers", which is inconsistent.
+    """
+    sup = SafetySupervisor(_sys_config())
+    state = _benign_state() | {"ai_failure": True, "fallback_mode": "LOW"}
+    cmd = ControlCommand(
+        mode="HIGH", n_chillers=3, vrf_demand_kw=2500.0,
+    )
+    out = sup.validate_command(cmd, state)
+    assert out.mode == "LOW"
+    assert out.n_chillers == 0
+    assert out.vrf_demand_kw == 0.0
+    assert out.overridden is True
+
+
+def test_rule7_ai_failure_mid_preserves_staging_count() -> None:
+    """Rule 7 with fallback_mode=MID does NOT clear n_chillers.
+
+    Only the LOW fallback path mirrors rule 6's clearing. A MID/HIGH
+    fallback continues to honour the upstream staging proposal so the
+    operator does not lose chillers when degrading from HIGH to MID.
+    """
+    sup = SafetySupervisor(_sys_config())
+    state = _benign_state() | {"ai_failure": True, "fallback_mode": "MID"}
+    cmd = ControlCommand(mode="HIGH", n_chillers=3, vrf_demand_kw=1000.0)
+    out = sup.validate_command(cmd, state)
+    assert out.mode == "MID"
+    assert out.n_chillers == 3
+    assert out.vrf_demand_kw == 1000.0
+    assert out.overridden is True
+
+
 # ---------------------------------------------------------------- combos
 
 @pytest.mark.parametrize("attr,value,expected", [

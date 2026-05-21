@@ -109,7 +109,16 @@ class ReportAgent:
             res.get("ai_requested_mode", "LOW"),
         )
         ai_risk = ai_info_node.get("risk_note", "-")
-        is_revised = "是" if res.get("ai_requested_mode") != res.get("combo") else "否"
+        # ``is_revised`` answers "did the safety supervisor modify the
+        # rule layer's recommendation?". The pre-safety proposal is
+        # surfaced as ``res['proposed_mode']`` (concern #11). For
+        # backward compatibility, when ``proposed_mode`` is absent we
+        # fall back to comparing the (post-safety) ``ai_requested_mode``
+        # against the engine's final mode.
+        proposed = res.get("proposed_mode")
+        if proposed is None or proposed == "-":
+            proposed = res.get("ai_requested_mode")
+        is_revised = "是" if proposed != res.get("combo") else "否"
 
         s_cfg = res.get("sys_safety_cfg", {}) or {}
         trans_limit = (

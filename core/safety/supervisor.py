@@ -99,6 +99,20 @@ class SafetySupervisor:
         The eight rules are listed in step 7 of FEAT-003 and each is
         documented inline below. Every rule that fires both appends a
         descriptive Chinese alarm and sets ``out.overridden = True``.
+
+        Rule precedence
+        ---------------
+        Rules execute strictly in numerical order 1 -> 8 with last-write-
+        wins semantics on the mutable ``out`` command. The practical
+        consequence is that a simultaneous comm-timeout (rule 6) and
+        indoor-temp breach (rule 8) lands at rule 8's escalation
+        (``MID``/``HIGH``), not rule 6's collapse to ``LOW``. This is
+        the **intended** ordering for this platform: a real overheating
+        room must always start chillers, even if the upstream BAS link
+        is flaky, because the fallback ``LOW`` mode would not relieve
+        the room. Operators who want comm-timeout to win unconditionally
+        should reorder rules 6/7 below rule 8 (or special-case the
+        combination here).
         """
         out = cmd.copy()
         safety = self._safety()
@@ -180,9 +194,12 @@ class SafetySupervisor:
 
         # --- Rule 6: communication timeout fallback ---------------------
         if bool(engine_state.get("comm_timeout", False)):
-            out.alarms.append("通讯中断: 控制链回退至 LOW 模式 (n_chillers=0)")
+            out.alarms.append(
+                "通讯中断: 控制链回退至 LOW 模式 (n_chillers=0, vrf_demand_kw=0)"
+            )
             out.mode = "LOW"
             out.n_chillers = 0
+            out.vrf_demand_kw = 0.0
             out.overridden = True
             _logger.error("SafetySupervisor: comm_timeout fallback to LOW")
 
@@ -195,6 +212,13 @@ class SafetySupervisor:
                 f"AI 策略失败: 回退至 {fallback_mode} 模式"
             )
             out.mode = fallback_mode
+            # When the resolved fallback is LOW the command must mirror
+            # rule 6's clearing -- otherwise an adapter would advertise
+            # ``mode=LOW`` while still asking for non-zero chillers /
+            # VRF demand on the BACnet wire.
+            if fallback_mode == "LOW":
+                out.n_chillers = 0
+                out.vrf_demand_kw = 0.0
             out.overridden = True
             _logger.error(
                 "SafetySupervisor: ai_failure fallback to %s", fallback_mode,

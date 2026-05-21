@@ -253,6 +253,16 @@ class WhiteBoxEngine:
         silent: bool = False,
         is_estop: bool = False,
     ) -> dict:
+        """Run one supervisory step and return the result dict.
+
+        ``forced_mode`` short-circuits the entire five-layer control chain
+        -- including the :class:`SafetySupervisor` final gate -- and is
+        equivalent to a manual operator override. It is used internally
+        by :class:`MPCStrategy` look-ahead with ``silent=True`` to score
+        candidate modes; production callers that need a vetted command
+        must leave ``forced_mode=None`` so the supervisor is consulted
+        (concern #4).
+        """
         # === Pre-state save ===
         prev_silent = self._is_silent
         self._is_silent = silent
@@ -319,11 +329,23 @@ class WhiteBoxEngine:
 
         # ── strategy dispatch via the control chain ────────────────────
         ai_info_resolved: dict | None = ai_info
+        proposed_mode: str | None = None
         if forced_mode is not None:
             req_mode = forced_mode
             cmd_obj = ControlCommand(mode=req_mode, n_chillers=0)
         else:
             try:
+                # Capture the rule-layer's pre-safety proposal so the
+                # downstream report can compute ``is_revised`` against the
+                # supervisor's verdict (concern #11). The rule layer is
+                # exposed for inspection; on any error we fall through to
+                # the chain's normal flow.
+                try:
+                    proposed_mode = self.control_chain._rule_layer(
+                        engine_state, self.sys_config, active_strategy,
+                    )
+                except Exception:
+                    proposed_mode = None
                 cmd_obj = self.control_chain.step(
                     engine_state=engine_state,
                     sys_config=self.sys_config,
@@ -333,9 +355,24 @@ class WhiteBoxEngine:
                 )
                 req_mode = cmd_obj.mode
             except Exception:
-                _logger.exception("WhiteBoxEngine: control chain failed; defaulting to LOW")
-                cmd_obj = ControlCommand(mode="LOW", n_chillers=0)
-                req_mode = "LOW"
+                _logger.exception("WhiteBoxEngine: control chain failed; routing fallback through supervisor")
+                # Synthesise a conservative LOW command and route it
+                # through the supervisor so that rule 8 (indoor-temp
+                # escalation) can still fire on the failure path. Only
+                # if validate_command itself raises do we drop to a bare
+                # hardcoded LOW.
+                fallback_cmd = ControlCommand(mode="LOW", n_chillers=0)
+                try:
+                    cmd_obj = self.supervisor.validate_command(
+                        fallback_cmd, engine_state,
+                    )
+                except Exception:
+                    _logger.exception(
+                        "WhiteBoxEngine: supervisor.validate_command also "
+                        "failed in fallback; using bare LOW",
+                    )
+                    cmd_obj = ControlCommand(mode="LOW", n_chillers=0)
+                req_mode = cmd_obj.mode
 
         if not req_mode:
             req_mode = "LOW"
@@ -346,11 +383,15 @@ class WhiteBoxEngine:
             cmd["alarms"].extend(cmd_obj.alarms)
 
         safety_override_flag = bool(cmd_obj.overridden)
-        # Indoor temp limit fires the "safety_override" branch in the
-        # legacy hydraulic+staging anti-chatter logic. We treat any
-        # supervisor override that altered the mode toward MID/HIGH the
-        # same way (so the staging lock can be bypassed when needed).
-        safety_override = safety_override_flag and cmd_obj.mode in ("MID", "HIGH")
+        # Any supervisor-driven override bypasses the engine's anti-chatter
+        # (``time_in_mode >= lock_req``) gate, regardless of mode direction.
+        # Concern #2: a supervisor-forced drop to LOW (rule 6 comm_timeout
+        # / rule 7 ai_failure) MUST land on the same step it was raised --
+        # delaying it by ``min_stop_minutes`` would be the opposite of the
+        # intended hard fallback. The supervisor itself already considers
+        # the lockout window in rule 5, so any override that survives
+        # validate_command has been deliberate.
+        safety_override = safety_override_flag
         if safety_override:
             self.log_event(
                 "安全超驰",
@@ -789,6 +830,9 @@ class WhiteBoxEngine:
             "total_kwh_saved": self.lcc.total_kwh_saved,
             "total_cost_saved": self.lcc.total_cost_saved,
             "ai_requested_mode": req_mode,
+            "proposed_mode": (
+                proposed_mode if proposed_mode is not None else req_mode
+            ),
             "ai_suggested_type": (
                 type(active_strategy).__name__ if active_strategy is not None else "无"
             ),
@@ -831,6 +875,7 @@ class WhiteBoxEngine:
             "cooling_satisfaction_val": 1.0,
             "cooling_satisfaction_disp": "急停状态，计费中止",
             "ai_requested_mode": "-",
+            "proposed_mode": "-",
             "ai_suggested_type": "急停断开",
             "ai_info": ai_info if ai_info else {
                 "reason": "-", "risk_note": "-",

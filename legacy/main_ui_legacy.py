@@ -1,3 +1,4 @@
+# LEGACY FROZEN COPY - retained for reference only. New code MUST NOT import from this file. See REFACTOR_NOTES.md.
 import tkinter as tk
 from tkinter import ttk, scrolledtext, filedialog, messagebox
 import json

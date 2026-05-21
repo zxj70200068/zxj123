@@ -37,4 +37,14 @@ exclude = ["legacy*", "tests*"]
 
 [tool.ruff]
 line-length = 110
+
+[tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Legacy verbatim configuration dictionaries copied from the original God File.
+"data/configs/defaults.py" = ["E501"]
+# Verbatim physics/hydraulic literals carried over from the legacy code.
+"core/physics/hydraulic.py" = ["E501"]
+"core/physics/terminal_linkage.py" = ["E501"]
+"core/physics/simulation_engine.py" = ["E501"]

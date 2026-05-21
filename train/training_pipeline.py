@@ -103,6 +103,19 @@ def train_load_forecaster(
     # sidecar ``.metadata.json`` written by :func:`export_metadata` below.
     joblib.dump(pipeline, out_path)
 
+    # Invalidate any in-process LoadPredictor cache so the running edge
+    # process picks up the freshly trained weights without restart
+    # (concern #6 from the v1 review). The import is local to avoid a
+    # cyclic dependency between train.* and prediction.*.
+    try:
+        from prediction.load_forecast_service import clear_cache as _clear
+        _clear(out_path)
+    except Exception:  # pragma: no cover - defensive
+        _logger.exception(
+            "train_load_forecaster: failed to invalidate predictor cache; "
+            "running processes may serve stale weights until restart"
+        )
+
     trained_at = _dt.datetime.now(_dt.timezone.utc).isoformat()
     metrics = {
         "mae": mae,

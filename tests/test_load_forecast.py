@@ -106,3 +106,44 @@ def test_predict_next_load_falls_back_when_model_missing(tmp_path: Path) -> None
     state = {"target_load_kw": 1234.0, "t_out": 30.0, "hour": 10}
     out = predict_next_load(state, model_path=missing)
     assert out == 1234.0
+
+
+def test_clear_cache_drops_stale_predictor_after_retrain(tmp_path: Path) -> None:
+    """Concern #6: a re-train under the same path must not serve stale weights.
+
+    Without :func:`prediction.load_forecast_service.clear_cache`, the
+    process-lifetime ``_predictor_cache`` would keep the first model's
+    weights forever. The training pipeline calls clear_cache after each
+    write; this test verifies the public API works end-to-end.
+    """
+    from prediction.load_forecast_service import (
+        _predictor_cache,
+        clear_cache,
+    )
+
+    out_path = tmp_path / "load_forecast_lr.joblib"
+    train_load_forecaster(model_path=out_path)
+
+    state = {
+        "t_out": 33.0, "hour": 14, "is_night": False,
+        "c_sch": 1.0, "c_occ": 1.0,
+        "t_in": 25.0, "target_load_kw": 3000.0,
+    }
+    # Warm the cache with the first model.
+    predict_next_load(state, model_path=out_path)
+    key = str(out_path.resolve())
+    assert key in _predictor_cache, "predictor was not cached after first call"
+
+    # Re-train: the training pipeline calls clear_cache(out_path) on its
+    # own. Verify the cache slot for this path was dropped.
+    train_load_forecaster(model_path=out_path)
+    assert key not in _predictor_cache, (
+        "training pipeline did not invalidate the predictor cache "
+        "after writing the new joblib bundle"
+    )
+
+    # The whole-cache reset path also works.
+    predict_next_load(state, model_path=out_path)
+    assert key in _predictor_cache
+    clear_cache()
+    assert _predictor_cache == {}

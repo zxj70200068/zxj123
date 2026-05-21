@@ -41,6 +41,28 @@ def _get_predictor(model_path: Path) -> LoadPredictor:
     return pred
 
 
+def clear_cache(model_path: str | Path | None = None) -> None:
+    """Drop cached :class:`LoadPredictor` instances.
+
+    Called by :func:`train.training_pipeline.train_load_forecaster` after
+    rewriting the joblib bundle so the running edge process no longer
+    serves stale weights. Without this, ``LoadPredictor._loaded`` stays
+    True for the lifetime of the process and the gateway keeps the old
+    model in memory until restart (concern #6 from the v1 review).
+
+    Parameters
+    ----------
+    model_path : str or Path, optional
+        When supplied, only the entry for this resolved path is dropped;
+        otherwise the entire cache is cleared.
+    """
+    if model_path is None:
+        _predictor_cache.clear()
+        return
+    key = str(Path(model_path).resolve())
+    _predictor_cache.pop(key, None)
+
+
 def _features_from_state(state: dict[str, Any]) -> dict[str, float]:
     """Build the 8-column feature dict from a runtime engine state.
 
@@ -121,4 +143,4 @@ def predict_next_load(
         return fallback
 
 
-__all__ = ["predict_next_load", "DEFAULT_MODEL_PATH"]
+__all__ = ["predict_next_load", "DEFAULT_MODEL_PATH", "clear_cache"]

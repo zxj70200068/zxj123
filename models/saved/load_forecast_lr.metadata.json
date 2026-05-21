@@ -1,0 +1,18 @@
+{
+  "model_path": "models/saved/load_forecast_lr.joblib",
+  "mae": 171.09494018554688,
+  "r2": 0.9746870994567871,
+  "n_samples": 719,
+  "features": [
+    "t_out",
+    "hour_sin",
+    "hour_cos",
+    "is_night",
+    "c_sch",
+    "c_occ",
+    "t_in_prev",
+    "load_prev"
+  ],
+  "schema_version": "1.0",
+  "trained_at": "2026-05-21T04:51:32.392270+00:00"
+}

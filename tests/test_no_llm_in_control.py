@@ -1,7 +1,7 @@
 """Static guard that the LLM-in-control path stays deleted.
 
-This test parses every ``.py`` file under ``core/`` and ``prediction/`` (the
-two packages that participate in the supervisory control loop) and asserts:
+This test parses every ``.py`` file under the control-loop subtrees of
+``core/`` plus ``prediction/`` and asserts:
 
 * No module imports ``urllib.request``, ``requests`` or ``openai``.
 * No class name contains ``LLM``, ``BiLSTM`` or ``CloudAI`` (matching is
@@ -10,10 +10,10 @@ two packages that participate in the supervisory control loop) and asserts:
   anywhere in the source text.
 
 The legacy/ tree is excluded by virtue of not being under ``core/`` or
-``prediction/``. The reporting subtree (``core/reporting``) is intentionally
-included: even though FEAT-004 will eventually reintroduce a *reporting-only*
-LLM client there, that client must be named without any of the banned
-substrings so the supervisory control regression stays locked in.
+``prediction/``. The reporting subtree (``core/reporting``) is also
+excluded: FEAT-004 reintroduces a reporting-only :class:`LLMClient`
+there, which is allowed by design. ``tests/test_no_llm_in_control_v2.py``
+provides the broader, FEAT-004-aware guard.
 """
 
 from __future__ import annotations
@@ -24,7 +24,21 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCAN_DIRS = (REPO_ROOT / "core", REPO_ROOT / "prediction")
+# Scan every control-loop subtree of ``core/`` plus ``prediction/``. The
+# reporting subtree (``core/reporting``) is intentionally **excluded**:
+# FEAT-004 reintroduces a reporting-only :class:`LLMClient` there which is
+# allowed by design. The same intent is enforced more comprehensively by
+# ``tests/test_no_llm_in_control_v2.py``; this v1 test continues to lock
+# the legacy banned-string regression in place for the control loop only.
+SCAN_DIRS = (
+    REPO_ROOT / "core" / "control",
+    REPO_ROOT / "core" / "simulation",
+    REPO_ROOT / "core" / "safety",
+    REPO_ROOT / "core" / "optimizer",
+    REPO_ROOT / "core" / "physics",
+    REPO_ROOT / "core" / "prediction",
+    REPO_ROOT / "prediction",
+)
 
 BANNED_IMPORTS: tuple[str, ...] = ("urllib.request", "requests", "openai")
 BANNED_CLASS_SUBSTRINGS: tuple[str, ...] = ("LLM", "BiLSTM", "CloudAI")

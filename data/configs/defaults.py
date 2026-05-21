@@ -228,4 +228,18 @@ __all__ = [
     "DEFAULT_POINT_LEDGER_TEMPLATE",
     "MODE_LABELS",
     "DISPLAY_NAME_MAP",
+    "STRATEGY_REGISTRY",
 ]
+
+
+# ---------------------------------------------------------------------------
+# STRATEGY_REGISTRY (FEAT-004): the UI control-strategy combo reads this.
+# Only LOCAL strategies are listed here; cloud / LLM-driven control strategies
+# have been deleted. Reporting-only LLM providers live in
+# ``data/configs/llm_providers.py`` under ``LLM_PROVIDER_PRESETS_FOR_REPORTING``
+# and are NEVER consumed by the control loop.
+# ---------------------------------------------------------------------------
+STRATEGY_REGISTRY: dict = {
+    "rule": {"label": "本地阈值规则控制", "type": "local"},
+    "mpc": {"label": "本地多步预测控制(MPC)", "type": "local"},
+}

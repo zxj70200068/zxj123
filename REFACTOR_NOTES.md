@@ -205,6 +205,16 @@
 - **`SafetySupervisor` 8 条硬规则** (`core/safety/supervisor.py`)：CHW 供水温度范围、泵频范围、`n_chillers` 范围、VRF 需求范围、`min_run`/`min_stop`、通讯超时回退、AI 策略失败回退、室温超限强制提模。
 - **`LowSensorMode` 降级输入** (`core/control/low_sensor_mode.py`)：传感器缺失或通讯降级时，由设计工况、时段、占用率反推一个保守但安全的观测向量，使上层决策仍可落地。
 
+### 行为变更说明 (vs legacy)
+
+下列控制链行为相比 legacy 实现已**主动加固**，不是简单的 1:1 移植；任何 PR 触发同样情境时新行为生效：
+
+- **Rule 8 (室温超限) 在低负荷工况更激进**：legacy `WhiteBoxEngine.execute_step` (L2272-2278) 在 `t_in > indoor_temp_limit` 时按 `q_required > th.mid` 决定 `MID` / `LOW`，亦即低负荷条件下可以仅靠 VRF 处理而不启动冷机。新 `SafetySupervisor` 第 8 条永远把 `t_in` 超限升级到至少 `MID` (负荷高于 `th_high` 时升至 `HIGH`)，即便瞬时负荷低也会启动冷机。理由：室温越限属于人体舒适与设备保护红线，不应由 VRF 单独承担恢复责任。运维侧需要知道一次低负荷晚间外扰会触发冷机投运，这与 legacy 行为不同。
+- **Rule 6 (`comm_timeout`) / Rule 7 (`ai_failure` LOW fallback)** 现在会把 `n_chillers=0` **以及** `vrf_demand_kw=0.0` 一并清零，使下发到 BACnet 的 `ControlCommand` 在 `mode=LOW` 与 `n_chillers/vrf_demand` 之间不再出现矛盾镜像 (v1 review 第 10 条)。
+- **`WhiteBoxEngine.execute_step` 反抖锁定** (`time_in_mode >= lock_req`) 现在被任何 `cmd_obj.overridden=True` 直接绕过，包括方向为 `LOW` 的 supervisor 强制降级 (v1 review 第 2 条)。这意味着通讯中断或 AI 失败发生当步即生效，不再延后到 `min_stop_minutes` 满足之后。
+- **控制链异常分支** 现在统一走 `supervisor.validate_command` (v1 review 第 3 条)。即便 `ControlChain.step` 抛出 `Exception`，引擎也会先合成一个 `ControlCommand(mode="LOW", n_chillers=0)` 交给 supervisor 验证一次；若彼时 `t_in` 已越限，rule 8 仍会把模式升至 `MID/HIGH`。仅当 `validate_command` 自身再次抛错时才退回硬编码 `LOW`。
+- **`predicted_next_load_kw` 当前是观测点位**：`prediction/load_forecast_service.predict_next_load` 真实推理结果会写入 `engine_state['predicted_next_load_kw']` 供 HistoryLogger 与 UI 读取，但 `RuleBasedStrategy` / `MPCStrategy` / `ChillerGroupOptimizer` 三处目前都没有把它纳入决策。把它接入 MPC 前瞻或规则阈值是第 9 节路线图的下一步动作。
+
 ---
 
 ## 5. 新控制链流程
@@ -357,13 +367,14 @@ models/saved/load_forecast_lr.metadata.json
 1. **真实 BACnet / Modbus / MQTT 驱动落地**：将 `adapters/<protocol>/base.py` 的接口骨架接到 `bacpypes3` / `pymodbus` / `paho-mqtt` 等库，完成现场点位读写。
 2. **用现场历史 CSV 替换合成数据集**：`train/datasets/` 当前训练样本是合成的；接入 `data/history/history_log.csv` 经清洗后的真实采样。
 3. **预测器从 Ridge 升级**：等特征工程更丰富 (天气预报、占用率、节假日) 后切换到 LightGBM / XGBoost；接口层 `prediction/load_forecast_service.py` 已为可替换设计。
-4. **新增 Pyomo MILP 备选机组组合**：在 `core/optimizer/` 下增加 `chiller_group_milp.py`，与 SLSQP 形成可切换的双解法。
-5. **水力模型扩展**：`HydraulicNetworkModel` 当前用简化的速度平方损耗近似，下一步引入分支管段、止回阀、平衡阀的非线性曲线。
-6. **EnergyPlus FMU 集成测试**：在 `tests/` 下建立 EnergyPlus FMU 黑盒回归用例，验证全平台跨季节工况稳定性。
-7. **每区占用率排程学习**：把楼宇逐区域占用率预测做成在线学习子模块，喂给 `LowSensorMode` 与 MPC。
-8. **CHW 供水温度设定值优化**：当前固定 7℃；纳入优化变量后 (受 `SafetySupervisor` 范围约束)，可获得额外节能空间。
-9. **变压器保护优先级队列**：当总负荷接近变压器额定时，按重要性排序自动卸荷的优先级队列。
-10. **UI 模块进一步拆分**：把 `ui/dashboard/main_window.py` 拆分为 `ui/charts/` (图表组件) 与 `ui/controls/` (控件组件) 两个子包，目录已预留。
+4. **把 `predicted_next_load_kw` 接入决策层**：当前 (v1 review 第 1 条) 预测结果写到 `engine_state['predicted_next_load_kw']` 但仅供观测；下一步把它喂到 `MPCStrategy._price_at` 周围的代价模型 (作为下一步负荷估计的来源)，或在 `RuleBasedStrategy` 的阈值判断中作为 trailing average 的延展。
+5. **新增 Pyomo MILP 备选机组组合**：在 `core/optimizer/` 下增加 `chiller_group_milp.py`，与 SLSQP 形成可切换的双解法。
+6. **水力模型扩展**：`HydraulicNetworkModel` 当前用简化的速度平方损耗近似，下一步引入分支管段、止回阀、平衡阀的非线性曲线。
+7. **EnergyPlus FMU 集成测试**：在 `tests/` 下建立 EnergyPlus FMU 黑盒回归用例，验证全平台跨季节工况稳定性。
+8. **每区占用率排程学习**：把楼宇逐区域占用率预测做成在线学习子模块，喂给 `LowSensorMode` 与 MPC。
+9. **CHW 供水温度设定值优化**：当前固定 7℃；纳入优化变量后 (受 `SafetySupervisor` 范围约束)，可获得额外节能空间。
+10. **变压器保护优先级队列**：当总负荷接近变压器额定时，按重要性排序自动卸荷的优先级队列。
+11. **UI 模块进一步拆分**：把 `ui/dashboard/main_window.py` 拆分为 `ui/charts/` (图表组件) 与 `ui/controls/` (控件组件) 两个子包，目录已预留。
 
 ---
 

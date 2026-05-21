@@ -87,3 +87,56 @@ def test_reporting_service_explain_alarm_no_llm_returns_boilerplate() -> None:
     assert isinstance(text, str)
     assert len(text) >= 50
     assert "告警" in text or "alarm" in text.lower()
+
+
+def test_simulation_service_run_sequence_dispatches_step_and_frame_callbacks() -> None:
+    """Concern #7: run_sequence wires UI callbacks for live frame rendering.
+
+    The legacy "边跑边刷" claim is now backed by ``on_step`` (per-step
+    result dict) and ``on_frame`` (per-step physics frame) parameters.
+    The frame-callback subscription is removed when the run completes
+    so subsequent calls without ``on_frame`` do not keep stale callers.
+    """
+    cm = ConfigManager()
+    svc = SimulationService(cm)
+    bk = next(iter(cm.building_configs))
+    s_name = next(iter(cm.scenarios.keys()))
+    plan = [{"scenario": s_name, "steps": 2}]
+
+    step_results: list[dict] = []
+    frame_results: list[dict] = []
+
+    def on_step(res: dict) -> None:
+        step_results.append(res)
+
+    def on_frame(state: dict) -> None:
+        frame_results.append(state)
+
+    out = svc.run_sequence(
+        bk, plan, strategy_name="rule", dt_min=15.0,
+        on_step=on_step, on_frame=on_frame,
+    )
+
+    assert len(out) == 2
+    assert len(step_results) == 2
+    assert len(frame_results) >= 1
+    # The on_frame subscription must be released after the run.
+    engine = svc._get_engine(bk)
+    assert on_frame not in engine.frame_callbacks
+
+
+def test_simulation_service_run_sequence_swallows_callback_errors() -> None:
+    """A buggy on_step callback must not stall the simulation."""
+    cm = ConfigManager()
+    svc = SimulationService(cm)
+    bk = next(iter(cm.building_configs))
+    s_name = next(iter(cm.scenarios.keys()))
+    plan = [{"scenario": s_name, "steps": 2}]
+
+    def boom(_res: dict) -> None:
+        raise RuntimeError("synthetic UI error")
+
+    out = svc.run_sequence(
+        bk, plan, strategy_name="rule", dt_min=15.0, on_step=boom,
+    )
+    assert len(out) == 2
